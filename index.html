@@ -32,14 +32,14 @@
   details[open] .chevron { transform: rotate(180deg); }
   .chevron { transition: transform .2s; }
   body { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
-</style>
+</style>    
 </head>
 <body class="min-h-screen">
 <main id="app" class="max-w-md mx-auto px-5 py-6"></main>
 
-<script> 
+<script>     
 /* ============================================================
-   1. DADOS DO TREINO (hardcoded) — [nome do exercício, nº de séries]
+   1. DADOS DO TREINO (hardcoded) — [nome do exercício, nº de série]
    ============================================================ */
 const PLAN = [
   { id: 1, name: 'Peito e Costas', ex: [
@@ -56,8 +56,8 @@ const PLAN = [
   { id: 5, name: 'Ombros e Braços', ex: [
     ['Desenvolvimento', 4], ['Elevação Frontal', 3], ['Rosca Direta', 4],
     ['Tríceps Francês', 4], ['Rosca Martelo', 3], ['Tríceps Pulley Barra Reta', 3] ] },
-];
-
+]; 
+   
 /* ============================================================
    2. PERSISTÊNCIA (localStorage)
    - gym_hist_v1:   histórico de treinos concluídos
@@ -67,7 +67,7 @@ const LS_HIST = 'gym_hist_v1', LS_ACTIVE = 'gym_active_v1';
 const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
 const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 
-let hist = load(LS_HIST, []);     // sessões concluídas
+let hist = load(LS_HIST, []);     // sessões concluídas teste
 let S = load(LS_ACTIVE, null);    // { dayId, i, start, res: [{kg, reps}] }
 let view = 'home';                // 'home' | 'workout' | 'done'
 let finished = null;              // sessão recém-concluída (tela final / PDF)
