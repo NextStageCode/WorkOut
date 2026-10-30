@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#12161f">
+<title>Treino</title>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+  :root { --bg:#12161f; --card:#1b2130; --line:#2a3246; --text:#eef1f7; --muted:#8c97ad; --accent:#ffc83d; }
+  html, body { background: var(--bg); color: var(--text); font-family: 'Barlow', system-ui, sans-serif; }
+  .display { font-family: 'Barlow Condensed', 'Barlow', sans-serif; font-weight: 700; letter-spacing: .01em; }
+  /* Remove as setinhas dos inputs numéricos */
+  input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+  input[type=number] { -moz-appearance: textfield; }
+  input:focus-visible, button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .field { background: var(--card); border: 2px solid var(--line); border-radius: 16px; width: 100%;
+           font-size: 3rem; text-align: center; padding: .6rem; color: var(--text); }
+  .field.erro { border-color: #ff6b6b; }
+  .btn-main { background: var(--accent); color: #1a1500; border-radius: 18px; font-weight: 600; font-size: 1.35rem;
+              width: 100%; padding: 1.2rem; }
+  .btn-main:active { transform: scale(.98); }
+  .chip { padding: .45rem .9rem; border-radius: 999px; font-weight: 600; font-size: .9rem; background: var(--card); border: 1px solid var(--line); color: var(--muted); }
+  .chip.on { background: var(--accent); border-color: var(--accent); color: #1a1500; }
+  select option { background: #1b2130; color: #eef1f7; }
+  /* Accordion do histórico */
+  details > summary { list-style: none; cursor: pointer; }
+  details > summary::-webkit-details-marker { display: none; }
+  details[open] .chevron { transform: rotate(180deg); }
+  .chevron { transition: transform .2s; }
+  body { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+</style>
+</head>
+<body class="min-h-screen">
+<main id="app" class="max-w-md mx-auto px-5 py-6"></main>
+
+<script> 
+/* ============================================================
+   1. DADOS DO TREINO (hardcoded) — [nome do exercício, nº de séries]
+   ============================================================ */
+const PLAN = [
+  { id: 1, name: 'Peito e Costas', ex: [
+    ['Supino Inclinado na Máquina', 4], ['Puxada Alta', 4], ['Supino Declinado na Polia', 3],
+    ['Puxada Baixa no Triângulo', 4], ['Supino Reto na Máquina', 3], ['Pulldown', 3] ] },
+  { id: 2, name: 'Braços e Ombros', ex: [
+    ['Rosca Scott', 4], ['Tríceps na Corda', 4], ['Rosca Inclinada', 4],
+    ['Tríceps Testa', 4], ['Elevação Lateral na Máquina', 4], ['Crucifixo Invertido', 4] ] },
+  { id: 3, name: 'Pernas', ex: [
+    ['Cadeira Extensora', 4], ['Cadeira Flexora', 4], ['Leg Press', 4], ['Panturrilha em Pé', 5] ] },
+  { id: 4, name: 'Peito e Costas', ex: [
+    ['Supino Inclinado na Máquina', 4], ['Puxada Alta', 4], ['Supino Declinado na Polia', 3],
+    ['Remada Curvada com Barra', 4], ['Crucifixo (Máquina ou Polia)', 3], ['Pulldown', 3] ] },
+  { id: 5, name: 'Ombros e Braços', ex: [
+    ['Desenvolvimento', 4], ['Elevação Frontal', 3], ['Rosca Direta', 4],
+    ['Tríceps Francês', 4], ['Rosca Martelo', 3], ['Tríceps Pulley Barra Reta', 3] ] },
+];
+
+/* ============================================================
+   2. PERSISTÊNCIA (localStorage)
+   - gym_hist_v1:   histórico de treinos concluídos
+   - gym_active_v1: treino em andamento (sobrevive a recarregar a página)
+   ============================================================ */
+const LS_HIST = 'gym_hist_v1', LS_ACTIVE = 'gym_active_v1';
+const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
+const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+
+let hist = load(LS_HIST, []);     // sessões concluídas
+let S = load(LS_ACTIVE, null);    // { dayId, i, start, res: [{kg, reps}] }
+let view = 'home';                // 'home' | 'workout' | 'done'
+let finished = null;              // sessão recém-concluída (tela final / PDF)
+let wake = null;                  // Wake Lock: mantém a tela ligada no treino
+
+/* ============================================================
+   3. FUNÇÕES AUXILIARES
+   ============================================================ */
+const $ = (id) => document.getElementById(id);
+const dayOf = (id) => PLAN.find(d => d.id === id);
+const fmtDate = (t) => new Date(t).toLocaleDateString('pt-BR');
+const fmtNum = (n) => n.toLocaleString('pt-BR', { maximumFractionDigits: 1 });
+const fmtTime = (ms) => { const m = Math.max(1, Math.round(ms / 60000)); return m >= 60 ? `${Math.floor(m/60)}h ${m%60}min` : `${m} min`; };
+
+// Transforma o treino do dia em uma lista plana: uma entrada por série
+function flatten(day) {
+  const out = [];
+  day.ex.forEach(([name, total], exIdx) => {
+    for (let n = 0; n < total; n++) out.push({ name, n, total, exIdx });
+  });
+  return out;
+}
+
+// Busca a carga/reps da última vez que o exercício foi feito (mesma série; senão, a última)
+function lastFor(name, n) {
+  for (let k = hist.length - 1; k >= 0; k--) {
+    const e = hist[k].exercises.find(x => x.name === name);
+    if (e && e.sets.length) return e.sets[n] || e.sets[e.sets.length - 1];
+  }
+  return null;
+}
+
+async function keepAwake() {
+  try { if ('wakeLock' in navigator) wake = await navigator.wakeLock.request('screen'); } catch {}
+}
+const buzz = () => navigator.vibrate && navigator.vibrate(30);
+
+/* ============================================================
+   4. AÇÕES
+   ============================================================ */
+function startDay(id) {
+  if (S && !confirm('Há um treino em andamento. Descartar e começar este?')) return;
+  S = { dayId: id, i: 0, start: Date.now(), res: [] };
+  save(LS_ACTIVE, S); view = 'workout'; keepAwake(); render();
+}
+function resume() { view = 'workout'; keepAwake(); render(); }
+function discard() {
+  if (!confirm('Descartar o treino em andamento?')) return;
+  S = null; localStorage.removeItem(LS_ACTIVE); render();
+}
+function showHistory() { view = 'history'; render(); window.scrollTo(0, 0); }
+function clearHistory() {
+  if (!confirm('Apagar TODO o histórico de treinos? Esta ação não pode ser desfeita.')) return;
+  hist = []; save(LS_HIST, hist); render();
+}
+function goHome() { finished = null; view = 'home'; if (wake) wake.release().catch(() => {}); render(); }
+
+// Lê um input; se estiver vazio, usa a sugestão (placeholder)
+function readField(id) {
+  const el = $(id);
+  const raw = (el.value || el.placeholder || '').replace(',', '.');
+  const v = parseFloat(raw);
+  if (isNaN(v) || v < 0) { el.classList.add('erro'); return null; }
+  return v;
+}
+
+function nextSet() {
+  const kg = readField('kg'), reps = readField('reps');
+  if (kg === null || reps === null) return;
+  buzz();
+  S.res[S.i] = { kg, reps };
+  const total = flatten(dayOf(S.dayId)).length;
+  if (S.i + 1 < total) { S.i++; save(LS_ACTIVE, S); render(); window.scrollTo(0, 0); }
+  else finish();
+}
+function prevSet() { if (S.i > 0) { S.i--; save(LS_ACTIVE, S); render(); } }
+
+// Fecha o treino: agrupa as séries por exercício e grava no histórico
+function finish() {
+  const day = dayOf(S.dayId);
+  const exercises = day.ex.map(([name]) => ({ name, sets: [] }));
+  flatten(day).forEach((f, idx) => exercises[f.exIdx].sets.push(S.res[idx]));
+  const volume = S.res.reduce((a, s) => a + s.kg * s.reps, 0);
+  finished = { date: Date.now(), dayId: day.id, name: day.name, duration: Date.now() - S.start,
+               volume, sets: S.res.length, exercises };
+  hist.push(finished); save(LS_HIST, hist);
+  S = null; localStorage.removeItem(LS_ACTIVE);
+  view = 'done'; render(); window.scrollTo(0, 0);
+}
+
+/* Gera o PDF desenhando texto e tabelas diretamente com jsPDF.
+   Não depende de "fotografar" a tela (html2canvas), então não fica em branco,
+   não sofre com scroll e funciona igual em qualquer celular. */
+function downloadPdf(f = finished) { // f = sessão a exportar (hist[i] no histórico)
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const M = 15, W = 210 - M * 2, LIMITE = 282;
+  let y = M;
+  const novaPagina = (h) => { if (y + h > LIMITE) { doc.addPage(); y = M; } };
+
+  // Cabeçalho
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(20); doc.setTextColor(17);
+  doc.text('Relatório de Treino', M, y + 6); y += 11;
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(11); doc.setTextColor(90);
+  doc.text(`Dia ${f.dayId} · ${f.name} — ${fmtDate(f.date)}`, M, y); y += 6;
+  doc.text(`Duração: ${fmtTime(f.duration)} · Volume total: ${fmtNum(f.volume)} kg · ${f.sets} séries`, M, y); y += 10;
+
+  // Um bloco (título + tabela) por exercício; nunca quebra no meio da tabela
+  f.exercises.forEach(e => {
+    novaPagina(6 + 6 + e.sets.length * 6 + 4);
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(17);
+    doc.text(e.name, M, y); y += 4;
+
+    doc.setFillColor(241, 241, 241); doc.rect(M, y, W, 6.5, 'F');
+    doc.setFontSize(10);
+    doc.text('Série', M + 2, y + 4.5); doc.text('Carga', M + 60, y + 4.5); doc.text('Reps', M + 120, y + 4.5);
+    y += 6.5;
+
+    doc.setFont('helvetica', 'normal'); doc.setDrawColor(220);
+    e.sets.forEach((s, k) => {
+      doc.text(String(k + 1), M + 2, y + 4.5);
+      doc.text(`${fmtNum(s.kg)} kg`, M + 60, y + 4.5);
+      doc.text(String(s.reps), M + 120, y + 4.5);
+      y += 6; doc.line(M, y, M + W, y);
+    });
+    y += 6;
+  });
+
+  doc.save(`treino-dia${f.dayId}-${new Date(f.date).toISOString().slice(0, 10)}.pdf`);
+}
+
+/* ============================================================
+   5. TELAS
+   ============================================================ */
+function renderHome() {
+  const cards = PLAN.map(d => {
+    const last = [...hist].reverse().find(h => h.dayId === d.id);
+    const sets = d.ex.reduce((a, e) => a + e[1], 0);
+    return `
+    <button onclick="startDay(${d.id})" class="w-full text-left rounded-2xl p-5 flex items-center gap-4 active:scale-[.98]"
+            style="background:var(--card);border:1px solid var(--line)">
+      <span class="display text-5xl w-12 text-center" style="color:var(--accent)">${d.id}</span>
+      <span class="flex-1">
+        <span class="display text-2xl block leading-tight">${d.name}</span>
+        <span class="text-sm" style="color:var(--muted)">${d.ex.length} exercícios · ${sets} séries</span>
+        <span class="text-sm block" style="color:var(--muted)">${last ? 'Último: ' + fmtDate(last.date) : 'Ainda não feito'}</span>
+      </span>
+    </button>`;
+  }).join('');
+
+  const banner = S ? `
+    <div class="rounded-2xl p-5 mb-5" style="background:var(--accent);color:#1a1500">
+      <p class="display text-2xl">Treino em andamento</p>
+      <p class="mb-3">Dia ${S.dayId} · ${dayOf(S.dayId).name} — série ${S.i + 1} de ${flatten(dayOf(S.dayId)).length}</p>
+      <div class="flex gap-3">
+        <button onclick="resume()" class="flex-1 rounded-xl py-3 font-semibold" style="background:#1a1500;color:var(--accent)">Continuar</button>
+        <button onclick="discard()" class="rounded-xl py-3 px-4 font-semibold border-2" style="border-color:#1a1500">Descartar</button>
+      </div>
+    </div>` : '';
+
+  return `
+    <h1 class="display text-5xl mb-1">Treino de hoje</h1>
+    <p class="mb-6" style="color:var(--muted)">${hist.length} treinos concluídos</p>
+    ${banner}
+    <div class="space-y-3">${cards}</div>
+    <button onclick="showHistory()" class="w-full mt-5 rounded-2xl py-4 font-semibold text-lg border-2" style="border-color:var(--accent);color:var(--accent)">📊 Ver Histórico de Evolução</button>`;
+}
+
+function renderWorkout() {
+  const day = dayOf(S.dayId), flat = flatten(day), cur = flat[S.i];
+  const pct = Math.round((S.i / flat.length) * 100);
+  const isLast = S.i === flat.length - 1;
+
+  // Sugestão: último treino (mesma série) → senão, série anterior desta sessão
+  let sug = lastFor(cur.name, cur.n);
+  const prev = S.res[S.i - 1];
+  const fallback = !sug && S.i > 0 && flat[S.i - 1].name === cur.name ? prev : null;
+  const hint = sug || fallback;
+  const saved = S.res[S.i]; // preenchido quando o usuário volta uma série
+
+  const dots = Array.from({ length: cur.total }, (_, k) =>
+    `<span class="h-2 flex-1 rounded-full" style="background:${k < cur.n ? 'var(--accent)' : k === cur.n ? 'var(--text)' : 'var(--line)'}"></span>`).join('');
+
+  return `
+    <div class="flex items-center gap-3 mb-3">
+      <button onclick="goHome()" aria-label="Sair do treino" class="w-11 h-11 rounded-full text-xl" style="background:var(--card)">✕</button>
+      <div class="flex-1">
+        <p class="font-semibold leading-tight">Dia ${day.id} · ${day.name}</p>
+        <p class="text-sm" style="color:var(--muted)">Exercício ${cur.exIdx + 1} de ${day.ex.length}</p>
+      </div>
+      <span class="display text-2xl" style="color:var(--accent)">${pct}%</span>
+    </div>
+    <div class="h-3 rounded-full overflow-hidden mb-8" style="background:var(--line)" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100">
+      <div class="h-full rounded-full transition-all" style="width:${pct}%;background:var(--accent)"></div>
+    </div>
+
+    <h2 class="display text-5xl leading-none mb-3">${cur.name}</h2>
+    <p class="text-xl mb-3">Série ${cur.n + 1} de ${cur.total}</p>
+    <div class="flex gap-2 mb-8">${dots}</div>
+
+    <div class="grid grid-cols-2 gap-4 mb-3">
+      <label class="block"><span class="block mb-2 font-semibold">Carga (kg)</span>
+        <input id="kg" class="field" type="number" inputmode="decimal" step="0.5" min="0"
+               placeholder="${hint ? hint.kg : '0'}" value="${saved ? saved.kg : ''}" oninput="this.classList.remove('erro')"></label>
+      <label class="block"><span class="block mb-2 font-semibold">Repetições</span>
+        <input id="reps" class="field" type="number" inputmode="numeric" step="1" min="0"
+               placeholder="${hint ? hint.reps : '0'}" value="${saved ? saved.reps : ''}" oninput="this.classList.remove('erro')"></label>
+    </div>
+    <p class="mb-8 text-sm" style="color:var(--muted)">
+      ${sug ? `Último treino: ${fmtNum(sug.kg)} kg × ${sug.reps}` : fallback ? `Série anterior: ${fmtNum(fallback.kg)} kg × ${fallback.reps}` : 'Primeira vez neste exercício. Preencha carga e repetições.'}
+      ${hint ? ' — deixe vazio para repetir.' : ''}
+    </p>
+
+    <button class="btn-main" onclick="nextSet()">${isLast ? 'Finalizar Treino' : 'Próxima Série'}</button>
+    ${S.i > 0 ? `<button onclick="prevSet()" class="w-full mt-4 py-3 font-semibold" style="color:var(--muted)">Voltar uma série</button>` : ''}`;
+}
+
+function renderDone() {
+  const f = finished;
+  const rows = f.exercises.map(e => `
+    <div class="bloco" style="page-break-inside:avoid;margin-bottom:10px">
+      <div style="font-weight:700;font-size:14px;margin-bottom:3px">${e.name}</div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <tr style="background:#f1f1f1;text-align:left"><th style="padding:2px 8px">Série</th><th style="padding:2px 8px">Carga</th><th style="padding:2px 8px">Reps</th></tr>
+        ${e.sets.map((s, k) => `<tr style="border-bottom:1px solid #e3e3e3"><td style="padding:2px 8px">${k + 1}</td><td style="padding:2px 8px">${fmtNum(s.kg)} kg</td><td style="padding:2px 8px">${s.reps}</td></tr>`).join('')}
+      </table>
+    </div>`).join('');
+
+  return `
+    <h1 class="display text-5xl mb-1" style="color:var(--accent)">Treino concluído!</h1>
+    <p class="mb-6" style="color:var(--muted)">Dia ${f.dayId} · ${f.name}</p>
+    <div class="grid grid-cols-3 gap-3 mb-6 text-center">
+      ${[[fmtNum(f.volume), 'kg de volume'], [fmtTime(f.duration), 'de treino'], [f.sets, 'séries']].map(([v, l]) => `
+        <div class="rounded-2xl py-4 px-1" style="background:var(--card);border:1px solid var(--line)">
+          <div class="display text-3xl">${v}</div><div class="text-xs" style="color:var(--muted)">${l}</div></div>`).join('')}
+    </div>
+
+    <!-- Relatório: este bloco é o que vira PDF -->
+    <div id="report" style="background:#fff;color:#111;border-radius:12px;padding:20px;margin-bottom:20px;font-family:Barlow,Arial,sans-serif">
+      <div style="font-size:22px;font-weight:700">Relatório de Treino</div>
+      <div style="font-size:14px;color:#555;margin-bottom:6px">Dia ${f.dayId} · ${f.name} — ${fmtDate(f.date)}</div>
+      <div style="font-size:13px;color:#555;margin-bottom:16px">Duração: ${fmtTime(f.duration)} · Volume total: ${fmtNum(f.volume)} kg · ${f.sets} séries</div>
+      ${rows}
+    </div>
+
+    <button class="btn-main mb-3" onclick="downloadPdf()">Baixar PDF do Treino</button>
+    <button onclick="goHome()" class="w-full rounded-2xl py-4 font-semibold text-lg border-2" style="border-color:var(--line)">Salvar e Voltar ao Início</button>`;
+}
+
+/* Maior carga do exercício na sessão idx anterior à atual (para comparar evolução) */
+function prevMax(idx, name) {
+  for (let k = idx - 1; k >= 0; k--) {
+    const e = hist[k].exercises.find(x => x.name === name);
+    if (e && e.sets.length) return Math.max(...e.sets.map(s => s.kg));
+  }
+  return null;
+}
+
+// Indicador de evolução da carga máxima vs. a última vez que o exercício foi feito
+function delta(now, before) {
+  if (before === null) return `<span class="text-xs" style="color:var(--muted)">primeira vez</span>`;
+  const d = now - before;
+  if (d > 0) return `<span class="text-xs font-semibold" style="color:#6ee7a0">▲ +${fmtNum(d)} kg</span>`;
+  if (d < 0) return `<span class="text-xs font-semibold" style="color:#ff8a8a">▼ ${fmtNum(d)} kg</span>`;
+  return `<span class="text-xs" style="color:var(--muted)">= igual</span>`;
+}
+
+/* ---------- Dados do histórico ---------- */
+const DAY = 864e5;
+let selEx = null;     // exercício do gráfico
+let selRange = 90;    // período do gráfico em dias (0 = tudo)
+
+// Exercícios únicos do PLAN, na ordem dos treinos
+function exerciseNames() { return [...new Set(PLAN.flatMap(d => d.ex.map(e => e[0])))]; }
+
+// Melhor série (Top Set): maior carga; no empate, mais repetições
+function topSet(sets) {
+  return sets.reduce((b, x) => (x.kg > b.kg || (x.kg === b.kg && x.reps > b.reps) ? x : b), sets[0]);
+}
+// 1RM estimado (Epley): permite comparar 40kg x 8 com 35kg x 12 na mesma escala
+const e1rm = (x) => x.kg * (1 + x.reps / 30);
+
+// Exercício padrão do gráfico: o mais treinado (empate = ordem do PLAN)
+function defaultExercise() {
+  const count = {};
+  hist.forEach(h => h.exercises.forEach(e => { count[e.name] = (count[e.name] || 0) + 1; }));
+  return exerciseNames().reduce((best, n) => ((count[n] || 0) > (count[best] || 0) ? n : best));
+}
+
+// Consistência: treinos na semana (seg-dom), nos últimos 30 dias e recordes de carga nesses 30 dias
+function histStats() {
+  const mon = new Date(); mon.setHours(0, 0, 0, 0); mon.setDate(mon.getDate() - ((mon.getDay() + 6) % 7));
+  const d30 = Date.now() - 30 * DAY;
+  let week = 0, m30 = 0, prs = 0;
+  hist.forEach((h, i) => {
+    if (h.date >= mon.getTime()) week++;
+    if (h.date < d30) return;
+    m30++;
+    h.exercises.forEach(e => { const p = prevMax(i, e.name); if (e.sets.length && p !== null && topSet(e.sets).kg > p) prs++; });
+  });
+  return { week, m30, prs };
+}
+
+function setRange(n) {
+  selRange = n;
+  document.querySelectorAll('[data-range]').forEach(b => b.classList.toggle('on', +b.dataset.range === n));
+  renderChart();
+}
+
+/* ---------- Tela de histórico ---------- */
+function renderHistory() {
+  const names = exerciseNames();
+  if (!names.includes(selEx)) selEx = defaultExercise();
+  const st = histStats();
+  const sorted = hist.map((h, i) => ({ h, i })).sort((a, b) => b.h.date - a.h.date);
+
+  // Timeline agrupada por mês, do mais recente para o mais antigo
+  let mes = '', timeline = '';
+  sorted.forEach(({ h, i }, pos) => {
+    const m = new Date(h.date).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+    if (m !== mes) { timeline += `${mes ? '</ol>' : ''}<h3 class="display text-xl capitalize mt-6 mb-3" style="color:var(--muted)">${m}</h3><ol class="relative ml-1.5" style="border-left:2px solid var(--line)">`; mes = m; }
+
+    let prCount = 0;
+    const exs = h.exercises.map(e => {
+      if (!e.sets.length) return '';
+      const top = topSet(e.sets), prev = prevMax(i, e.name), pr = prev !== null && top.kg > prev;
+      if (pr) prCount++;
+      const chips = e.sets.map(x => `<span class="rounded-lg px-2.5 py-1 text-sm font-semibold" style="${x === top ? 'background:var(--accent);color:#1a1500' : 'background:var(--bg);color:var(--muted)'}">${fmtNum(x.kg)}×${x.reps}</span>`).join('');
+      return `<li class="py-3" style="border-top:1px solid var(--line)">
+        <div class="flex items-start justify-between gap-3"><span class="font-semibold leading-tight">${e.name}${pr ? ' 🏆' : ''}</span>${delta(top.kg, prev)}</div>
+        <div class="flex flex-wrap gap-2 mt-2">${chips}</div></li>`;
+    }).join('');
+
+    const quando = new Date(h.date).toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit' });
+    timeline += `
+      <li class="relative pl-5 pb-3">
+        <span class="absolute rounded-full" style="left:-7px;top:22px;width:12px;height:12px;background:${prCount ? 'var(--accent)' : 'var(--line)'};border:2px solid var(--bg)"></span>
+        <details class="rounded-2xl" style="background:var(--card);border:1px solid var(--line)" ${pos === 0 ? 'open' : ''}>
+          <summary class="p-4 flex items-center gap-3">
+            <span class="flex-1">
+              <span class="block text-sm" style="color:var(--muted)">${quando}</span>
+              <span class="display text-2xl block leading-tight">Dia ${h.dayId}: ${h.name}</span>
+              <span class="text-sm" style="color:var(--muted)">${fmtTime(h.duration)} · ${h.exercises.length} exercícios${prCount ? ` · <span style="color:var(--accent)">🏆 ${prCount} ${prCount > 1 ? 'recordes' : 'recorde'}</span>` : ''}</span>
+            </span>
+            <span class="chevron text-xl" style="color:var(--muted)">⌄</span>
+          </summary>
+          <ul class="px-4">${exs}</ul>
+          <div class="px-4 pb-4 pt-1">
+            <button onclick="downloadPdf(hist[${i}])" class="w-full rounded-xl py-3 text-sm font-semibold border-2" style="border-color:var(--line)">📄 Baixar PDF deste treino</button>
+          </div>
+        </details>
+      </li>`;
+  });
+  timeline += '</ol>';
+
+  const tile = (v, l) => `<div class="rounded-2xl py-3 text-center" style="background:var(--card);border:1px solid var(--line)"><div class="display text-3xl">${v}</div><div class="text-xs px-1" style="color:var(--muted)">${l}</div></div>`;
+  const rangeBtn = (n, l) => `<button data-range="${n}" onclick="setRange(${n})" class="chip ${selRange === n ? 'on' : ''}">${l}</button>`;
+
+  const dashboard = `
+    <div class="grid grid-cols-3 gap-3 mb-6">
+      ${tile(st.week + '/5', 'treinos esta semana')}${tile(st.m30, 'treinos em 30 dias')}${tile('🏆 ' + st.prs, 'recordes em 30 dias')}
+    </div>
+    <label for="exercise-select" class="block mb-2 font-semibold">Evolução por exercício</label>
+    <select id="exercise-select" onchange="selEx = this.value; renderChart()" class="w-full rounded-xl p-3 text-lg mb-3" style="background:var(--card);border:2px solid var(--line);color:var(--text)">
+      ${names.map(n => `<option value="${n}" ${n === selEx ? 'selected' : ''}>${n}</option>`).join('')}
+    </select>
+    <div class="flex gap-2 mb-3">${rangeBtn(30, '30 dias')}${rangeBtn(90, '90 dias')}${rangeBtn(0, 'Tudo')}</div>
+    <p id="chart-summary" class="mb-2 font-semibold"></p>
+    <div class="relative mb-8 rounded-2xl p-3" style="height:280px;background:var(--card);border:1px solid var(--line)">
+      <canvas id="evolutionChart"></canvas>
+      <p id="chart-empty" class="hidden absolute inset-0 flex items-center justify-center text-center p-6" style="color:var(--muted)">Sem registros deste exercício neste período.</p>
+    </div>
+    <h2 class="display text-3xl">Treinos</h2>
+    <p class="text-sm" style="color:var(--muted)">Destaque amarelo = melhor série · 🏆 = recorde de carga</p>`;
+
+  const vazio = `<div class="rounded-2xl p-8 text-center" style="background:var(--card);border:1px solid var(--line)"><p class="text-lg">Nenhum treino registrado ainda. Comece a treinar para ver sua evolução!</p></div>`;
+
+  return `
+    <div id="history-screen" class="screen">
+      <div class="mb-5"><button onclick="goHome()" class="rounded-full px-4 py-2 font-semibold" style="background:var(--card)">⬅ Voltar</button></div>
+      <h1 class="display text-5xl mb-5">Histórico e Evolução</h1>
+      ${hist.length ? dashboard + timeline : vazio}
+      ${hist.length ? `<button onclick="clearHistory()" class="w-full mt-8 py-3 text-sm font-semibold" style="color:#ff8a8a">Limpar Histórico</button>` : ''}
+    </div>`;
+}
+
+/* ---------- Gráfico (Chart.js) ---------- */
+let chart = null;
+
+// Por sessão em que o exercício foi feito: carga máxima, reps dessa série e 1RM estimado do dia
+function buildChartData(name, range) {
+  const from = range ? Date.now() - range * DAY : 0;
+  const pts = [...hist].sort((a, b) => a.date - b.date).filter(h => h.date >= from).map(h => {
+    const e = h.exercises.find(x => x.name === name);
+    return e && e.sets.length ? { date: h.date, top: topSet(e.sets), rm: Math.max(...e.sets.map(e1rm)) } : null;
+  }).filter(Boolean);
+  return {
+    labels: pts.map(p => new Date(p.date).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })),
+    kg: pts.map(p => p.top.kg), reps: pts.map(p => p.top.reps), rm: pts.map(p => Math.round(p.rm * 10) / 10),
+  };
+}
+
+// Chamada ao abrir o histórico e ao mudar exercício/período; destrói a instância anterior
+function renderChart() {
+  if (chart) { chart.destroy(); chart = null; }
+  const el = $('evolutionChart');
+  if (!el || typeof Chart === 'undefined') return;
+  const d = buildChartData(selEx, selRange), has = d.kg.length > 0, sum = $('chart-summary');
+  el.classList.toggle('hidden', !has);
+  $('chart-empty').classList.toggle('hidden', has);
+
+  // Resumo: primeira → última carga do período
+  if (!has) sum.innerHTML = '';
+  else if (d.kg.length < 2) sum.innerHTML = `<span style="color:var(--muted)">1 registro: ${fmtNum(d.kg[0])} kg</span>`;
+  else {
+    const diff = d.kg.at(-1) - d.kg[0], pct = d.kg[0] ? Math.round(diff / d.kg[0] * 100) : 0;
+    const cor = diff > 0 ? '#6ee7a0' : diff < 0 ? '#ff8a8a' : 'var(--muted)';
+    sum.innerHTML = `${fmtNum(d.kg[0])} kg → ${fmtNum(d.kg.at(-1))} kg <span style="color:${cor}">(${diff > 0 ? '+' : ''}${fmtNum(diff)} kg, ${diff > 0 ? '+' : ''}${pct}%)</span>`;
+  }
+  if (!has) return;
+
+  Chart.defaults.color = '#c3cadb';
+  Chart.defaults.font.family = 'Barlow, system-ui, sans-serif';
+  chart = new Chart(el, {
+    type: 'line',
+    data: { labels: d.labels, datasets: [
+      { label: 'Carga máxima', data: d.kg, borderColor: '#ffc83d', backgroundColor: '#ffc83d', tension: .3, borderWidth: 3, pointRadius: 5, pointHoverRadius: 7 },
+      { label: '1RM estimado', data: d.rm, borderColor: '#5ab0ff', backgroundColor: '#5ab0ff', borderDash: [6, 4], tension: .3, borderWidth: 2, pointRadius: 2 },
+    ] },
+    options: {
+      responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+      scales: {
+        x: { grid: { color: 'rgba(255,255,255,.06)' } },
+        y: { grace: '10%', title: { display: true, text: 'kg' }, grid: { color: 'rgba(255,255,255,.08)' }, ticks: { callback: v => fmtNum(v) } },
+      },
+      plugins: {
+        legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 10 } },
+        tooltip: { callbacks: { label: c => c.datasetIndex === 0
+          ? `Carga máxima: ${fmtNum(c.parsed.y)} kg x ${d.reps[c.dataIndex]} reps`
+          : `1RM estimado: ${fmtNum(c.parsed.y)} kg` } },
+      },
+    },
+  });
+}
+
+/* Renderiza a tela atual e foca o primeiro campo no treino */
+function render() {
+  $('app').innerHTML = view === 'workout' && S ? renderWorkout()
+    : view === 'done' && finished ? renderDone()
+    : view === 'history' ? renderHistory()
+    : (view = 'home', renderHome());
+  if (view === 'history') renderChart();
+  else if (chart) { chart.destroy(); chart = null; }
+}
+render();
+</script>
+</body>
+</html>
